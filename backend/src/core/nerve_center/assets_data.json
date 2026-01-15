@@ -1,0 +1,220 @@
+{
+  "version": "1.0.0",
+  "last_updated": "2025-01-14",
+  "owner": "Rafał Wesołowski",
+  
+  "hardware": {
+    "hw-bambu-x1c": {
+      "name": "Bambu Lab X1 Carbon",
+      "type": "3D Printer",
+      "status": "active",
+      "capabilities": ["3D printing", "Multi-material", "High-speed", "Lidar"],
+      "use_for": "Prototyping, custom parts, enclosures"
+    },
+    "hw-einstar-scanner": {
+      "name": "Einstar 3D Scanner", 
+      "type": "3D Scanner",
+      "status": "active",
+      "capabilities": ["3D scanning", "Texture capture", "Mesh export"],
+      "use_for": "Digitization, reverse engineering, architectural capture"
+    }
+  },
+  
+  "ai_tools": {
+    "claude-opus": {
+      "name": "Claude Opus 4",
+      "provider": "Anthropic",
+      "use_for": ["Critical code", "Complex architecture", "NH core", "Novel problems"],
+      "avoid_for": ["Simple tasks", "Basic documentation"],
+      "complexity": "high-critical"
+    },
+    "claude-sonnet": {
+      "name": "Claude Sonnet 4",
+      "provider": "Anthropic", 
+      "use_for": ["Standard code", "Code review", "Medium complexity"],
+      "avoid_for": ["Mission-critical decisions"],
+      "complexity": "low-high"
+    },
+    "gemini-cli": {
+      "name": "Gemini CLI",
+      "provider": "Google",
+      "command": "gemini",
+      "use_for": ["Documentation", "README files", "Bulk text processing"],
+      "avoid_for": ["Critical code", "Complex debugging"],
+      "complexity": "trivial-medium",
+      "cost": "free"
+    },
+    "codex-cli": {
+      "name": "Codex CLI",
+      "provider": "OpenAI",
+      "command": "codex",
+      "use_for": ["Simple code", "Bug fixes", "Test generation"],
+      "avoid_for": ["NH core", "Architecture decisions"],
+      "complexity": "trivial-medium"
+    }
+  },
+  
+  "services": {
+    "railway": {
+      "name": "Railway",
+      "type": "PaaS",
+      "use_for": "Deployment, hosting",
+      "deployed": ["NH Mission Control API"]
+    },
+    "anthropic-api": {
+      "name": "Anthropic API",
+      "type": "LLM API",
+      "env_var": "ANTHROPIC_API_KEY"
+    },
+    "github": {
+      "name": "GitHub Pro",
+      "type": "Code hosting"
+    }
+  },
+  
+  "projects": {
+    "nh-core": {
+      "name": "Neural Holding (NH)",
+      "codename": "NH",
+      "priority": "CRITICAL",
+      "status": "active",
+      "completion": 35,
+      "description": "22-layer autonomous enterprise system for Citi exit by April 2026",
+      "tech": ["Python", "FastAPI", "React", "TypeScript", "PostgreSQL"],
+      "delegate_to": ["claude-opus"],
+      "deadline": "2026-04"
+    },
+    "nh-mission-control": {
+      "name": "NH Mission Control",
+      "codename": "NHMC",
+      "priority": "CRITICAL",
+      "status": "active",
+      "completion": 60,
+      "description": "Real-time dashboard for NH operations",
+      "tech": ["React", "TypeScript", "FastAPI", "WebSocket"],
+      "delegate_to": ["claude-opus", "claude-sonnet"]
+    },
+    "synaptic-weavers": {
+      "name": "Synaptic Weavers",
+      "codename": "SW",
+      "priority": "HIGH",
+      "status": "active", 
+      "completion": 70,
+      "description": "Multi-agent AI for FastAPI + Vue/React code generation",
+      "tech": ["Python", "FastAPI", "Vue 3", "React"],
+      "delegate_to": ["claude-opus", "claude-sonnet"]
+    },
+    "signal-factory": {
+      "name": "Signal Factory",
+      "codename": "SF",
+      "priority": "HIGH",
+      "status": "active",
+      "completion": 65,
+      "description": "Algo trading with Markov optimization, 1.10 Sharpe ratio",
+      "tech": ["Python", "NumPy", "Pandas", "XTB API"],
+      "delegate_to": ["claude-opus", "claude-sonnet"],
+      "notes": "Exploring Open Interest and liquidation data"
+    },
+    "time-org-app": {
+      "name": "Time Organization App",
+      "codename": "TOA",
+      "priority": "HIGH",
+      "status": "active",
+      "completion": 25,
+      "description": "ADHD-optimized time management app",
+      "tech": ["React", "TypeScript", "Zustand"],
+      "delegate_to": ["claude-opus", "claude-sonnet"],
+      "path": "/Users/rafalwesolowski/github/time-organization-app"
+    },
+    "floor-plan-recognition": {
+      "name": "Floor Plan Recognition",
+      "codename": "FPR",
+      "priority": "MEDIUM",
+      "status": "paused",
+      "completion": 20,
+      "description": "PDF floor plans to IFC converter for BIM",
+      "tech": ["Python", "OpenCV", "PyTorch", "IFCOpenShell"],
+      "delegate_to": ["claude-opus", "gemini-cli"],
+      "blockers": ["Watermark handling", "IFC export complexity"]
+    },
+    "prospect-finder": {
+      "name": "NH Prospect Finder",
+      "codename": "PF",
+      "priority": "HIGH",
+      "status": "planning",
+      "completion": 5,
+      "description": "AI-powered lead generation system",
+      "tech": ["Python", "FastAPI", "LangChain"],
+      "delegate_to": ["claude-opus", "gemini-cli"],
+      "nh_layer": 15
+    },
+    "career-navigator": {
+      "name": "Career Navigator",
+      "codename": "CN",
+      "priority": "LOW",
+      "status": "paused",
+      "completion": 40,
+      "description": "ML career path optimization using Markov chains",
+      "tech": ["Python", "scikit-learn", "FastAPI"],
+      "delegate_to": ["claude-sonnet", "codex-cli"]
+    },
+    "ultrasinger": {
+      "name": "UltraSinger",
+      "codename": "US", 
+      "priority": "LOW",
+      "status": "paused",
+      "completion": 50,
+      "description": "Karaoke file generator",
+      "tech": ["Python", "librosa", "demucs"],
+      "delegate_to": ["codex-cli", "gemini-cli"]
+    },
+    "chess-intuition": {
+      "name": "Chess Intuition Trainer",
+      "codename": "CIT",
+      "priority": "EXPERIMENTAL",
+      "status": "idea",
+      "completion": 0,
+      "description": "Magnus-style chess learning app",
+      "tech": ["React", "TypeScript", "chess.js"],
+      "delegate_to": ["codex-cli", "gemini-cli"]
+    },
+    "polish-llm": {
+      "name": "Polish Sector LLM",
+      "codename": "PLLM",
+      "priority": "EXPERIMENTAL",
+      "status": "idea",
+      "completion": 0,
+      "description": "Bielik-based LLM for Polish finance/healthcare",
+      "tech": ["Python", "PyTorch", "Transformers"],
+      "delegate_to": ["claude-opus"]
+    }
+  },
+  
+  "delegation_rules": {
+    "critical_tasks": {
+      "route_to": "claude-opus",
+      "applies_to": ["NH core", "Mission Control", "Architecture decisions", "Complex debugging"]
+    },
+    "documentation": {
+      "route_to": "gemini-cli",
+      "rationale": "Free, good for bulk documentation work"
+    },
+    "simple_code": {
+      "route_to": "codex-cli",
+      "applies_to": ["Bug fixes", "Test generation", "Simple refactoring"],
+      "rationale": "Save Claude tokens for complex work"
+    },
+    "experimental_projects": {
+      "route_to": ["codex-cli", "claude-sonnet"],
+      "rationale": "Lower priority = acceptable to use cheaper tools"
+    }
+  },
+  
+  "quick_reference": {
+    "active_critical": ["NH", "NHMC"],
+    "active_high": ["SW", "SF", "TOA", "PF"],
+    "paused_resume_candidates": ["FPR", "CN"],
+    "total_projects": 11,
+    "monthly_infra_cost_estimate_usd": 15
+  }
+}

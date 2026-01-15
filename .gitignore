@@ -1,0 +1,129 @@
+# NH Mission Control - Git Ignore
+# =================================
+
+# ==========================================================================
+# Python
+# ==========================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+coverage.xml
+*.cover
+*.py,cover
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# ==========================================================================
+# Node.js
+# ==========================================================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Build outputs
+dist/
+dist-ssr/
+*.local
+
+# ==========================================================================
+# IDE
+# ==========================================================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.classpath
+.settings/
+
+# ==========================================================================
+# Environment
+# ==========================================================================
+.env
+.env.local
+.env.*.local
+.env.production
+
+# ==========================================================================
+# OS
+# ==========================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ==========================================================================
+# Docker
+# ==========================================================================
+docker-compose.override.yml
+
+# ==========================================================================
+# Project Specific
+# ==========================================================================
+# Session logs (may contain sensitive info)
+data/session_logs/*.json
+data/session_summaries/*.json
+
+# Local test databases
+*.db
+*.sqlite
+
+# Generated files
+*.generated.*
+
+# Temporary files
+tmp/
+temp/
+tmpclaude-*-cwd
+_backup/
+
+# Logs
+logs/
+*.log
+
+# ==========================================================================
+# Secrets (NEVER commit these)
+# ==========================================================================
+*.pem
+*.key
+secrets/
+credentials/

@@ -1,0 +1,462 @@
+import { test, expect } from '@playwright/test';
+
+/**
+ * E2E tests for NH API connection in NH Mission Control.
+ * Tests the frontend's ability to communicate with the backend NH API endpoints.
+ */
+
+test.describe('NH API Connection', () => {
+  // Run tests serially to avoid race conditions with shared frontend server
+  test.describe.configure({ mode: 'serial' });
+
+  test.beforeEach(async ({ page }) => {
+    // Navigate to the main dashboard
+    await page.goto('/');
+    // Wait for React Query to finish loading and dashboard to render
+    await page.waitForLoadState('networkidle');
+    // Wait for React hydration and initial data fetch
+    await page.locator('h1:has-text("NH Mission Control")').waitFor({ state: 'visible', timeout: 15000 });
+  });
+
+  test('should load the dashboard successfully', async ({ page }) => {
+    // Verify the dashboard loads - main elements should be visible
+    await expect(page.locator('h1:has-text("NH Mission Control")')).toBeVisible();
+    await expect(page.getByText('Total Jobs')).toBeVisible();
+    await expect(page.getByText('Running Jobs')).toBeVisible();
+    await expect(page.getByText('Active Alerts')).toBeVisible();
+    await expect(page.getByText('System Health')).toBeVisible();
+  });
+
+  test('should display health status in header', async ({ page }) => {
+    // The header should show the health status indicator
+    const header = page.locator('header');
+    await expect(header).toBeVisible();
+    // Header should contain health-related content or status
+    await expect(page.locator('h1:has-text("NH Mission Control")')).toBeVisible();
+  });
+
+  test('should display projects list section', async ({ page }) => {
+    // Projects section should be visible (as a card showing project count)
+    const projectsSection = page.getByText('Projects').first();
+    await expect(projectsSection).toBeVisible();
+  });
+
+  test('should display alerts panel', async ({ page }) => {
+    // Alerts panel should be visible (h2 heading)
+    const alertsSection = page.locator('h2:has-text("Alerts")').first();
+    await expect(alertsSection).toBeVisible();
+  });
+
+  test('should show pipeline status chart', async ({ page }) => {
+    // Pipeline section should be visible
+    const pipelineSection = page.locator('h2:has-text("Pipeline Status")').first();
+    await expect(pipelineSection).toBeVisible();
+  });
+
+  test('should have working refresh button', async ({ page }) => {
+    // Find and click the refresh button in the header
+    const refreshButton = page.locator('header button').first();
+    await expect(refreshButton).toBeVisible();
+    await refreshButton.click();
+    // Wait for refresh to complete
+    await page.waitForLoadState('networkidle');
+    // Dashboard should still be visible after refresh
+    await expect(page.getByText('Total Jobs')).toBeVisible();
+  });
+
+  test('should display footer with version info', async ({ page }) => {
+    // Footer should show version information
+    const footer = page.locator('footer');
+    await expect(footer).toBeVisible();
+    await expect(footer.getByText('NH Mission Control v1.0.0')).toBeVisible();
+  });
+});
+
+test.describe('NH API Backend Health', () => {
+  test('backend health endpoint should return healthy status', async ({ request }) => {
+    // Directly test the backend health endpoint
+    const response = await request.get('http://localhost:8000/health');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data).toHaveProperty('status');
+    expect(data.status).toBe('healthy');
+    expect(data).toHaveProperty('service');
+    expect(data.service).toBe('nh-mission-control');
+  });
+
+  test('backend health endpoint should include valid epoch timestamp', async ({ request }) => {
+    // Test epoch timestamp stamping on health endpoint
+    const response = await request.get('http://localhost:8000/health');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data).toHaveProperty('timestamp');
+
+    // Verify timestamp is a valid ISO 8601 format string
+    const timestamp = data.timestamp;
+    expect(typeof timestamp).toBe('string');
+
+    // Parse the timestamp and verify it's a valid date
+    const parsedDate = new Date(timestamp);
+    expect(parsedDate.getTime()).not.toBeNaN();
+
+    // Verify the timestamp is recent (within the last 5 minutes)
+    const now = Date.now();
+    const timestampMs = parsedDate.getTime();
+    const fiveMinutesMs = 5 * 60 * 1000;
+    expect(now - timestampMs).toBeLessThan(fiveMinutesMs);
+
+    // Verify it's a UTC timestamp (contains '+00:00' or 'Z' for UTC)
+    expect(timestamp.includes('+00:00') || timestamp.endsWith('Z')).toBeTruthy();
+  });
+
+  test('backend NH API health endpoint should respond', async ({ request }) => {
+    // Test the NH API health proxy endpoint
+    const response = await request.get('http://localhost:8000/api/v1/nh/health');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    // NH API health endpoint returns status and connected properties
+    expect(data).toHaveProperty('status');
+    expect(data).toHaveProperty('connected');
+    expect(data).toHaveProperty('service');
+    expect(data.service).toBe('neural-holding');
+  });
+
+  test('backend dashboard endpoint should return metrics', async ({ request }) => {
+    // Test the dashboard endpoint
+    const response = await request.get('http://localhost:8000/api/v1/dashboard/');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data).toHaveProperty('metrics');
+    expect(data.metrics).toHaveProperty('active_projects');
+    expect(data.metrics).toHaveProperty('running_pipelines');
+    expect(data.metrics).toHaveProperty('system_health');
+  });
+
+  test('backend projects endpoint should return array', async ({ request }) => {
+    // Test the projects endpoint
+    const response = await request.get('http://localhost:8000/api/v1/projects/');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(Array.isArray(data)).toBeTruthy();
+  });
+
+  test('backend alerts endpoint should return array', async ({ request }) => {
+    // Test the alerts endpoint
+    const response = await request.get('http://localhost:8000/api/v1/alerts/');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(Array.isArray(data)).toBeTruthy();
+  });
+
+  test('backend pipeline status endpoint should return status', async ({ request }) => {
+    // Test the pipeline status endpoint
+    const response = await request.get('http://localhost:8000/api/v1/pipeline/status');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data).toHaveProperty('running');
+    expect(data).toHaveProperty('queued');
+    expect(data).toHaveProperty('completed');
+    expect(data).toHaveProperty('failed');
+  });
+});
+
+test.describe('NH API Epoch Stamping', () => {
+  test('projects should have valid created_at timestamp', async ({ request }) => {
+    // Create a new project
+    const createResponse = await request.post('http://localhost:8000/api/v1/projects/', {
+      data: {
+        name: 'Epoch Test Project',
+        description: 'Testing epoch stamping',
+        status: 'active',
+      },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+
+    const project = await createResponse.json();
+    expect(project).toHaveProperty('created_at');
+
+    // Verify created_at is a valid ISO 8601 timestamp
+    const createdAt = project.created_at;
+    expect(typeof createdAt).toBe('string');
+
+    // Verify it matches ISO 8601 format (YYYY-MM-DDTHH:mm:ss.ssssss)
+    expect(createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+    const parsedDate = new Date(createdAt + 'Z'); // Append Z to treat as UTC
+    expect(parsedDate.getTime()).not.toBeNaN();
+
+    // Verify the timestamp is recent (within the last 2 hours to account for timezone)
+    const now = Date.now();
+    const timestampMs = parsedDate.getTime();
+    const twoHoursMs = 2 * 60 * 60 * 1000;
+    expect(Math.abs(now - timestampMs)).toBeLessThan(twoHoursMs);
+
+    // Clean up - delete the project
+    await request.delete(`http://localhost:8000/api/v1/projects/${project.id}`);
+  });
+
+  test('alerts should have valid created_at and acknowledged_at timestamps', async ({ request }) => {
+    // Create a new alert
+    const createResponse = await request.post('http://localhost:8000/api/v1/alerts/', {
+      data: {
+        title: 'Epoch Test Alert',
+        message: 'Testing epoch stamping on alerts',
+        severity: 'info',
+        source: 'e2e-test',
+      },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+
+    const alert = await createResponse.json();
+    expect(alert).toHaveProperty('created_at');
+
+    // Verify created_at matches ISO format
+    const createdAt = alert.created_at;
+    expect(createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    const parsedCreated = new Date(createdAt + 'Z');
+    expect(parsedCreated.getTime()).not.toBeNaN();
+
+    // Acknowledge the alert (uses PUT, not POST)
+    const ackResponse = await request.put(
+      `http://localhost:8000/api/v1/alerts/${alert.id}/acknowledge`
+    );
+    expect(ackResponse.ok()).toBeTruthy();
+
+    const ackAlert = await ackResponse.json();
+    expect(ackAlert).toHaveProperty('acknowledged_at');
+    expect(ackAlert.acknowledged_at).not.toBeNull();
+
+    const acknowledgedAt = ackAlert.acknowledged_at;
+    expect(acknowledgedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    const parsedAck = new Date(acknowledgedAt + 'Z');
+    expect(parsedAck.getTime()).not.toBeNaN();
+
+    // acknowledged_at should be after or equal to created_at
+    expect(parsedAck.getTime()).toBeGreaterThanOrEqual(parsedCreated.getTime());
+
+    // Clean up
+    await request.delete(`http://localhost:8000/api/v1/alerts/${alert.id}`);
+  });
+
+  test('metrics should have valid created_at timestamp', async ({ request }) => {
+    // Create a new metric
+    const createResponse = await request.post('http://localhost:8000/api/v1/metrics/', {
+      data: {
+        name: 'epoch_test_metric',
+        value: 42.0,
+        unit: 'count',
+        project_id: null,
+      },
+    });
+    expect(createResponse.ok()).toBeTruthy();
+
+    const metric = await createResponse.json();
+    expect(metric).toHaveProperty('created_at');
+
+    const createdAt = metric.created_at;
+    // Verify ISO 8601 format
+    expect(createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+
+    const parsedDate = new Date(createdAt + 'Z');
+    expect(parsedDate.getTime()).not.toBeNaN();
+
+    // Verify timestamp is recent (within 2 hours to account for timezone)
+    const now = Date.now();
+    expect(Math.abs(now - parsedDate.getTime())).toBeLessThan(2 * 60 * 60 * 1000);
+
+    // Clean up
+    await request.delete(`http://localhost:8000/api/v1/metrics/${metric.id}`);
+  });
+});
+
+test.describe('NH API Jobs Endpoints', () => {
+  test('should list NH jobs', async ({ request }) => {
+    const response = await request.get('http://localhost:8000/api/v1/nh/jobs');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(Array.isArray(data)).toBeTruthy();
+  });
+
+  test('should get NH queue status', async ({ request }) => {
+    const response = await request.get('http://localhost:8000/api/v1/nh/queue/status');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data).toHaveProperty('total_jobs');
+    expect(data).toHaveProperty('pending_jobs');
+    expect(data).toHaveProperty('running_jobs');
+    expect(data).toHaveProperty('completed_jobs');
+    expect(data).toHaveProperty('failed_jobs');
+  });
+
+  test('should get NH AFK status', async ({ request }) => {
+    const response = await request.get('http://localhost:8000/api/v1/nh/afk/status');
+    expect(response.ok()).toBeTruthy();
+
+    const data = await response.json();
+    expect(data).toHaveProperty('active');
+    expect(typeof data.active).toBe('boolean');
+  });
+});
+
+test.describe('Frontend Real NH Data Display', () => {
+  // Run tests serially to avoid race conditions with shared frontend server
+  test.describe.configure({ mode: 'serial' });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.waitForLoadState('networkidle');
+    // Wait for React hydration and initial data fetch
+    await page.locator('h1:has-text("NH Mission Control")').waitFor({ state: 'visible', timeout: 15000 });
+  });
+
+  test('should display real job count from NH API', async ({ page, request }) => {
+    // Get the actual job count from the API
+    const response = await request.get('http://localhost:8000/api/v1/nh/queue/status');
+    const queueStatus = await response.json();
+
+    // Verify the Total Jobs card shows the correct count
+    await expect(page.getByText('Total Jobs')).toBeVisible();
+
+    // The page should contain the total jobs number
+    await expect(page.getByText(String(queueStatus.total_jobs)).first()).toBeVisible();
+  });
+
+  test('should display running jobs from NH API', async ({ page, request }) => {
+    // Get queue status
+    const response = await request.get('http://localhost:8000/api/v1/nh/queue/status');
+    const queueStatus = await response.json();
+
+    // Verify the Running Jobs card shows the correct count
+    await expect(page.getByText('Running Jobs')).toBeVisible();
+    await expect(page.getByText(String(queueStatus.running_jobs)).first()).toBeVisible();
+  });
+
+  test('should display jobs list with real data', async ({ page }) => {
+    // The Jobs section should be visible
+    const jobsSection = page.locator('h2:has-text("Jobs")');
+    await expect(jobsSection).toBeVisible();
+
+    // Should show job count in parentheses
+    await expect(jobsSection).toContainText('(');
+  });
+
+  test('should display real job details in the jobs list', async ({ page, request }) => {
+    // Get jobs from API
+    const response = await request.get('http://localhost:8000/api/v1/nh/jobs');
+    const jobs = await response.json();
+
+    // Should have jobs if the mock API has data
+    if (jobs.length > 0) {
+      // Look for the first job's description or project name in the list
+      const firstJob = jobs[0];
+
+      // The jobs list container should be visible
+      const jobsSection = page.locator('h2:has-text("Jobs")').locator('..');
+      await expect(jobsSection).toBeVisible();
+
+      // Extract project name from path (handles both Unix and Windows paths)
+      // The frontend shows just the project folder name, not the full path
+      const pathParts = firstJob.project_path.split(/[/\\]/);
+      const projectName = pathParts[pathParts.length - 1] || firstJob.project_path;
+      await expect(page.getByText(projectName).first()).toBeVisible();
+    }
+  });
+
+  test('should display different job statuses with correct styling', async ({ page, request }) => {
+    // Get jobs from API
+    const response = await request.get('http://localhost:8000/api/v1/nh/jobs');
+    const jobs = await response.json();
+
+    // Find jobs with different statuses
+    const runningJob = jobs.find((j: { status: string }) => j.status === 'running');
+    const pendingJob = jobs.find((j: { status: string }) => j.status === 'pending');
+    const failedJob = jobs.find((j: { status: string }) => j.status === 'failed');
+
+    // Verify running job status is displayed (case insensitive)
+    if (runningJob) {
+      await expect(page.getByText(/running/i).first()).toBeVisible();
+    }
+
+    // Verify pending job status is displayed
+    if (pendingJob) {
+      await expect(page.getByText(/pending/i).first()).toBeVisible();
+    }
+
+    // Verify failed job status is displayed
+    if (failedJob) {
+      await expect(page.getByText(/failed/i).first()).toBeVisible();
+    }
+  });
+
+  test('should display job priority badges', async ({ page, request }) => {
+    // Get jobs from API
+    const response = await request.get('http://localhost:8000/api/v1/nh/jobs');
+    const jobs = await response.json();
+
+    // Check if we have jobs with different priorities
+    const highPriorityJob = jobs.find((j: { priority: string }) => j.priority === 'high');
+    const criticalJob = jobs.find((j: { priority: string }) => j.priority === 'critical');
+
+    // Verify priority badges are displayed (case insensitive)
+    if (highPriorityJob) {
+      await expect(page.getByText(/high/i).first()).toBeVisible();
+    }
+
+    if (criticalJob) {
+      await expect(page.getByText(/critical/i).first()).toBeVisible();
+    }
+  });
+
+  test('should display queued jobs count correctly', async ({ page, request }) => {
+    // Get queue status
+    const response = await request.get('http://localhost:8000/api/v1/nh/queue/status');
+    const queueStatus = await response.json();
+
+    // Verify the Queued Jobs card shows pending count
+    await expect(page.getByText('Queued Jobs')).toBeVisible();
+
+    // Queued should include pending jobs
+    const expectedQueued = queueStatus.pending_jobs;
+    await expect(page.getByText(String(expectedQueued)).first()).toBeVisible();
+  });
+
+  test('should calculate system health based on job success rate', async ({ page }) => {
+    // System health card should be visible
+    await expect(page.getByText('System Health')).toBeVisible();
+
+    // Should show a percentage somewhere on the page
+    await expect(page.getByText(/%/).first()).toBeVisible();
+  });
+
+  test('should update data when refresh button is clicked', async ({ page }) => {
+    // Find and click the refresh button
+    const refreshButton = page.locator('header button').first();
+    await expect(refreshButton).toBeVisible();
+
+    // Click refresh
+    await refreshButton.click();
+    await page.waitForLoadState('networkidle');
+
+    // Dashboard should still show jobs section after refresh
+    await expect(page.locator('h2:has-text("Jobs")')).toBeVisible();
+  });
+
+  test('should display pipeline chart with real data', async ({ page }) => {
+    // Pipeline chart section should be visible
+    const pipelineSection = page.locator('h2:has-text("Pipeline Status")');
+    await expect(pipelineSection).toBeVisible();
+
+    // The parent container should exist
+    const pipelineContainer = pipelineSection.locator('..');
+    await expect(pipelineContainer).toBeVisible();
+  });
+});

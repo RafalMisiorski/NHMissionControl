@@ -1,0 +1,63 @@
+# NH Epoch Manifest - Version Control for Stable Features
+# ALWAYS check this file before making changes
+
+epochs:
+  epoch1:
+    name: "Authentication"
+    status: "LOCKED"  # ✓ Complete and tested
+    description: "User authentication, JWT tokens, session management"
+    locked_at: "2026-01-13"
+    protected_paths:
+      - "src/features/auth/*"
+      - "src/api/auth.py"
+      - "tests/epoch1/*"
+    guardian_hash: null  # Will be set when locked
+
+  epoch2:
+    name: "Dashboard Shell"
+    status: "LOCKED"  # ✓ Complete and tested
+    description: "Dashboard layout, sidebar, theme, navigation"
+    locked_at: "2026-01-13"
+    protected_paths:
+      - "src/features/dashboard/*"
+      - "frontend/src/components/Layout/*"
+      - "frontend/src/components/Sidebar/*"
+      - "frontend/src/providers/ThemeProvider.tsx"
+      - "tests/epoch2/*"
+    guardian_hash: null
+
+  epoch3:
+    name: "Pipeline Module"
+    status: "ACTIVE"  # ← Current work
+    description: "Opportunity pipeline, lead management, scoring"
+    started_at: "2026-01-13"
+    active_paths:
+      - "src/features/pipeline/*"
+      - "src/api/pipeline.py"
+      - "src/api/opportunities.py"
+      - "frontend/src/features/pipeline/*"
+      - "tests/epoch3/*"
+
+  epoch4:
+    name: "Financial Tracker"
+    status: "PENDING"
+    description: "Income tracking, expense management, reporting"
+
+  epoch5:
+    name: "Market Intelligence"
+    status: "PENDING"
+    description: "Market scanning, competitor analysis, opportunity scoring"
+
+  epoch6:
+    name: "Memory Cortex"
+    status: "PENDING"
+    description: "Session logging, pattern extraction, learning system"
+
+rules:
+  - "Only ONE epoch can be ACTIVE at a time"
+  - "LOCKED epochs cannot be modified without explicit unlock"
+  - "Run guardian tests before and after any change"
+  - "Create checkpoints at logical boundaries"
+
+current_epoch: 3
+last_updated: "2026-01-13"
