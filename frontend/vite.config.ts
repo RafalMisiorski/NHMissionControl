@@ -11,7 +11,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 3000,
+    port: 3200,
     proxy: {
       '/api/v1/nh': {
         target: 'http://localhost:8100',
@@ -19,15 +19,15 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/v1\/nh/, '/api'),
       },
       '/api': {
-        target: 'http://localhost:8001',
+        target: 'http://localhost:8200',
         changeOrigin: true,
       },
       '/health': {
-        target: 'http://localhost:8001',
+        target: 'http://localhost:8200',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8001',
+        target: 'ws://localhost:8200',
         ws: true,
       },
     },
