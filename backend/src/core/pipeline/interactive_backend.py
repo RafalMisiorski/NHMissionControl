@@ -155,6 +155,10 @@ class WindowsPTYBackend(InteractiveBackend):
         self._output_buffer: List[str] = []
         self._read_task: Optional[asyncio.Task] = None
 
+        # Thread-safe queue for reader thread
+        self._thread_queue: Optional[Any] = None  # queue.Queue
+        self._reader_thread: Optional[Any] = None  # threading.Thread
+
         # State
         self._running = False
         self._awaiting_input = False
@@ -201,6 +205,8 @@ class WindowsPTYBackend(InteractiveBackend):
     ) -> bool:
         """Start using pywinpty for true ConPTY support."""
         import winpty
+        import queue
+        import threading
 
         # Build CC command
         cc_cmd = "claude"
@@ -222,8 +228,17 @@ class WindowsPTYBackend(InteractiveBackend):
         self._running = True
         self._awaiting_input = True  # Initial state: waiting for first prompt
 
-        # Start read loop immediately (using a small delay to let PTY initialize)
-        await asyncio.sleep(0.5)
+        # Create thread-safe queue and start reader thread
+        self._thread_queue = queue.Queue()
+        self._reader_thread = threading.Thread(
+            target=self._blocking_reader_thread,
+            daemon=True,
+            name="pty-reader"
+        )
+        self._reader_thread.start()
+
+        # Start async consumer task
+        await asyncio.sleep(0.3)  # Let PTY initialize
         self._read_task = asyncio.create_task(self._read_loop_winpty())
 
         logger.info(
@@ -233,6 +248,45 @@ class WindowsPTYBackend(InteractiveBackend):
         )
 
         return True
+
+    def _blocking_reader_thread(self) -> None:
+        """Dedicated thread for PTY reads using polling approach."""
+        import time
+        import msvcrt
+
+        while self._running and self._pty:
+            try:
+                # Check if PTY is alive
+                if not self._pty.isalive():
+                    self._thread_queue.put(("EOF", None))
+                    break
+
+                # Use the PTY's file object for reading with Windows kbhit-style polling
+                try:
+                    # Check if process has output by reading with a small timeout
+                    # Using read() which may block, but we check isalive() frequently
+                    # Read larger buffer to reduce overhead
+                    data = self._pty.read(4096)
+                    if data:
+                        self._thread_queue.put(("DATA", data))
+                    else:
+                        # Empty read usually means no data available yet
+                        # Small sleep to prevent busy loop
+                        time.sleep(0.05)
+                except EOFError:
+                    self._thread_queue.put(("EOF", None))
+                    break
+                except Exception as e:
+                    # Log but continue - some errors are recoverable
+                    if "would block" in str(e).lower():
+                        time.sleep(0.02)
+                    else:
+                        raise
+
+            except Exception as e:
+                if self._running:
+                    self._thread_queue.put(("ERROR", str(e)))
+                break
 
     async def _start_with_subprocess(
         self,
@@ -278,7 +332,9 @@ class WindowsPTYBackend(InteractiveBackend):
         return True
 
     async def _read_loop_winpty(self) -> None:
-        """Read loop for winpty backend using polling with short reads."""
+        """Read loop for winpty backend - consumes from reader thread queue."""
+        import queue
+
         consecutive_empty_reads = 0
         max_empty_before_alive_check = 20  # Check alive after ~2 seconds of no data
 
@@ -293,36 +349,26 @@ class WindowsPTYBackend(InteractiveBackend):
                         break
                     await self._check_awaiting_state()
 
-                # Try to read available data (non-blocking with short timeout via executor)
-                loop = asyncio.get_event_loop()
-
-                def do_read():
-                    try:
-                        # Read what's available - this may still block briefly
-                        # but using small buffer helps
-                        return self._pty.read(1024)
-                    except EOFError:
-                        return None
-                    except Exception:
-                        return ""
-
+                # Get data from the reader thread queue (non-blocking)
                 try:
-                    data = await asyncio.wait_for(
-                        loop.run_in_executor(None, do_read),
-                        timeout=0.1,
-                    )
-                except asyncio.TimeoutError:
-                    data = ""
+                    msg_type, data = self._thread_queue.get_nowait()
 
-                if data is None:
-                    # EOF
-                    logger.info("PTY returned EOF")
-                    self._running = False
-                    break
-                elif data:
-                    consecutive_empty_reads = 0
-                    await self._process_output(data)
-                else:
+                    if msg_type == "EOF":
+                        logger.info("PTY returned EOF")
+                        self._running = False
+                        break
+                    elif msg_type == "ERROR":
+                        logger.error("Read error from reader thread", error=data)
+                        self._running = False
+                        break
+                    elif msg_type == "DATA" and data:
+                        consecutive_empty_reads = 0
+                        await self._process_output(data)
+                    else:
+                        consecutive_empty_reads += 1
+
+                except queue.Empty:
+                    # No data available, check state and sleep briefly
                     consecutive_empty_reads += 1
                     await asyncio.sleep(0.1)
 
@@ -488,6 +534,10 @@ class WindowsPTYBackend(InteractiveBackend):
             except:
                 self._process.kill()
 
+        # Wait for reader thread to finish
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=2.0)
+
         if self._read_task:
             self._read_task.cancel()
             try:
@@ -505,6 +555,10 @@ class WindowsPTYBackend(InteractiveBackend):
             self._pty.close()
         elif self._process:
             self._process.kill()
+
+        # Wait briefly for reader thread
+        if self._reader_thread and self._reader_thread.is_alive():
+            self._reader_thread.join(timeout=1.0)
 
         if self._read_task:
             self._read_task.cancel()
