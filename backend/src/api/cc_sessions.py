@@ -1,12 +1,12 @@
 """
-CC Sessions API Routes (EPOCH 8)
-=================================
+CC Sessions API Routes (EPOCH 8 + EPOCH 9 Interactive Mode)
+============================================================
 
 REST and WebSocket endpoints for Claude Code session management.
 
-Endpoints:
+Headless Endpoints (EPOCH 8):
 - GET    /api/v1/cc-sessions           - List all sessions
-- POST   /api/v1/cc-sessions           - Create new session
+- POST   /api/v1/cc-sessions           - Create new headless session
 - GET    /api/v1/cc-sessions/{id}      - Get session details
 - POST   /api/v1/cc-sessions/{id}/task - Send task to session
 - POST   /api/v1/cc-sessions/{id}/command - Send command/input
@@ -15,9 +15,15 @@ Endpoints:
 - POST   /api/v1/cc-sessions/{id}/restart - Force restart
 - DELETE /api/v1/cc-sessions/{id}      - Kill session
 - WS     /api/v1/cc-sessions/{id}/stream - Real-time output stream
+
+Interactive Endpoints (EPOCH 9):
+- POST   /api/v1/cc-sessions/interactive - Create interactive session
+- POST   /api/v1/cc-sessions/{id}/prompt - Send prompt (interactive)
+- POST   /api/v1/cc-sessions/{id}/input  - Send raw input (interactive)
+- GET    /api/v1/cc-sessions/{id}/events - Get parsed events
 """
 
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
@@ -25,7 +31,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db
-from src.core.models import CCSessionStatus, CCSessionPlatform
+from src.core.models import CCSessionStatus, CCSessionPlatform, CCSessionMode, CCEventType
 from src.core.pipeline.cc_session_manager import CCSessionManager, CCSessionState
 from src.core.nerve_center.events import EventBuilder, NHEvent
 
@@ -90,6 +96,75 @@ class ScreenResponse(BaseModel):
     """Session screen capture response."""
     session_id: str
     content: str
+
+
+# ==========================================================================
+# Interactive Session Schemas (EPOCH 9)
+# ==========================================================================
+
+class CreateInteractiveSessionRequest(BaseModel):
+    """Request to create a new interactive CC session."""
+    working_directory: str = Field(..., description="Directory where CC will run")
+    pipeline_run_id: Optional[str] = Field(None, description="Associated pipeline run ID")
+    stage_id: Optional[str] = Field(None, description="Associated pipeline stage ID")
+    dangerous_mode: bool = Field(True, description="Use --dangerously-skip-permissions")
+
+
+class SendPromptRequest(BaseModel):
+    """Request to send a prompt to an interactive CC session."""
+    prompt: str = Field(..., description="The prompt to send")
+
+
+class SendInputRequest(BaseModel):
+    """Request to send raw input to an interactive CC session."""
+    text: str = Field(..., description="The input text to send")
+
+
+class InteractiveSessionResponse(BaseModel):
+    """Interactive CC session response."""
+    session_id: str
+    session_name: str
+    status: str
+    mode: str
+    platform: str
+    working_directory: str
+    pipeline_run_id: Optional[str]
+    stage_id: Optional[str]
+    task_prompt: Optional[str]
+    dangerous_mode: bool
+    started_at: Optional[str]
+    runtime_seconds: float
+    output_lines: int
+    prompt_count: int
+    event_count: int
+
+    class Config:
+        from_attributes = True
+
+
+class SessionEventResponse(BaseModel):
+    """A parsed event from an interactive session."""
+    event_id: str
+    event_type: str
+    timestamp: str
+    tool_name: Optional[str]
+    tool_input: Optional[Dict[str, Any]]
+    tool_output: Optional[str]
+    tool_duration_ms: Optional[int]
+    content: Optional[str]
+    is_error: bool
+    error_type: Optional[str]
+    line_start: Optional[int]
+    line_end: Optional[int]
+
+
+class EventsResponse(BaseModel):
+    """Response containing parsed events from a session."""
+    session_id: str
+    events: List[SessionEventResponse]
+    total_events: int
+    tool_summary: Dict[str, int]
+    error_summary: Dict[str, int]
 
 
 # ==========================================================================
@@ -411,7 +486,252 @@ async def kill_session(
             detail=f"Session {session_id} not found",
         )
 
-    await manager.kill_session(session_id)
+    # Handle based on mode
+    if state.mode == CCSessionMode.INTERACTIVE:
+        await manager.kill_interactive_session(session_id)
+    else:
+        await manager.kill_session(session_id)
+
+
+# ==========================================================================
+# Interactive Session Endpoints (EPOCH 9)
+# ==========================================================================
+
+def _interactive_state_to_response(state: CCSessionState, platform: str) -> InteractiveSessionResponse:
+    """Convert CCSessionState to interactive response model."""
+    from datetime import datetime, timezone
+
+    runtime = 0.0
+    if state.started_at:
+        runtime = (datetime.now(timezone.utc) - state.started_at).total_seconds()
+
+    return InteractiveSessionResponse(
+        session_id=state.session_id,
+        session_name=state.session_name,
+        status=state.status.value,
+        mode=state.mode.value,
+        platform=platform,
+        working_directory=state.working_directory,
+        pipeline_run_id=state.pipeline_run_id,
+        stage_id=state.stage_id,
+        task_prompt=state.task_prompt,
+        dangerous_mode=state.dangerous_mode,
+        started_at=state.started_at.isoformat() if state.started_at else None,
+        runtime_seconds=runtime,
+        output_lines=len(state.output_lines),
+        prompt_count=state.prompt_count,
+        event_count=len(state.parsed_events),
+    )
+
+
+@router.post("/interactive", response_model=InteractiveSessionResponse, status_code=status.HTTP_201_CREATED)
+async def create_interactive_session(
+    request: CreateInteractiveSessionRequest,
+    manager: CCSessionManager = Depends(get_session_manager),
+):
+    """
+    Create a new interactive CC session.
+
+    Unlike headless mode, interactive sessions:
+    - Start Claude Code WITHOUT the -p flag
+    - Allow multi-turn conversations
+    - Preserve context across prompts
+    - Parse tool calls and thinking in real-time
+    """
+    session_id = str(uuid4())
+
+    try:
+        state = await manager.create_interactive_session(
+            session_id=session_id,
+            working_directory=request.working_directory,
+            pipeline_run_id=request.pipeline_run_id,
+            stage_id=request.stage_id,
+            dangerous_mode=request.dangerous_mode,
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create interactive session: {str(e)}",
+        )
+
+    platform = manager.platform.value if hasattr(manager, "platform") else "unknown"
+    return _interactive_state_to_response(state, platform)
+
+
+@router.post("/{session_id}/prompt", response_model=InteractiveSessionResponse)
+async def send_prompt(
+    session_id: str,
+    request: SendPromptRequest,
+    manager: CCSessionManager = Depends(get_session_manager),
+):
+    """
+    Send a prompt to an interactive CC session.
+
+    Use this for multi-turn conversations. The session must be
+    in interactive mode and in AWAITING_INPUT status.
+    """
+    state = manager.sessions.get(session_id)
+
+    if not state:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
+    if state.mode != CCSessionMode.INTERACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Session {session_id} is not in interactive mode. Use /task endpoint for headless mode.",
+        )
+
+    if state.status not in (CCSessionStatus.AWAITING_INPUT, CCSessionStatus.IDLE):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Session is in {state.status.value} state. Wait for AWAITING_INPUT status.",
+        )
+
+    try:
+        await manager.send_prompt(session_id, request.prompt)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send prompt: {str(e)}",
+        )
+
+    # Refresh state
+    state = manager.sessions.get(session_id)
+    platform = manager.platform.value if hasattr(manager, "platform") else "unknown"
+    return _interactive_state_to_response(state, platform)
+
+
+@router.post("/{session_id}/input", response_model=dict)
+async def send_input(
+    session_id: str,
+    request: SendInputRequest,
+    manager: CCSessionManager = Depends(get_session_manager),
+):
+    """
+    Send raw input to an interactive CC session.
+
+    Use this for answering CC's questions or confirmations.
+    Different from /prompt - this sends raw text without processing.
+    """
+    state = manager.sessions.get(session_id)
+
+    if not state:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
+    if state.mode != CCSessionMode.INTERACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Session {session_id} is not in interactive mode. Use /command endpoint for headless mode.",
+        )
+
+    try:
+        await manager.send_interactive_input(session_id, request.text)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to send input: {str(e)}",
+        )
+
+    return {"status": "sent", "text": request.text}
+
+
+@router.get("/{session_id}/events", response_model=EventsResponse)
+async def get_events(
+    session_id: str,
+    event_type: Optional[str] = None,
+    limit: int = 100,
+    manager: CCSessionManager = Depends(get_session_manager),
+):
+    """
+    Get parsed events from an interactive CC session.
+
+    Events include tool calls, thinking blocks, errors, etc.
+    Use this to monitor CC's actions at a granular level.
+
+    Args:
+        event_type: Filter by event type (e.g., "tool_call_start", "thinking", "error")
+        limit: Maximum number of events to return (default 100)
+    """
+    state = manager.sessions.get(session_id)
+
+    if not state:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
+    # Parse event type filter
+    event_types = None
+    if event_type:
+        try:
+            event_types = [CCEventType(event_type)]
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid event type: {event_type}. Valid types: {[e.value for e in CCEventType]}",
+            )
+
+    # Get events from manager
+    events = await manager.get_session_events(
+        session_id,
+        event_types=event_types,
+        limit=limit,
+    )
+
+    # Get summaries from event processor
+    tool_summary = {}
+    error_summary = {}
+    if state.event_processor:
+        tool_summary = state.event_processor.get_tool_summary()
+        error_summary = state.event_processor.get_error_summary()
+
+    return EventsResponse(
+        session_id=session_id,
+        events=[SessionEventResponse(**e) for e in events],
+        total_events=len(state.parsed_events),
+        tool_summary=tool_summary,
+        error_summary=error_summary,
+    )
+
+
+@router.post("/{session_id}/stop", response_model=dict)
+async def stop_interactive_session(
+    session_id: str,
+    manager: CCSessionManager = Depends(get_session_manager),
+):
+    """
+    Gracefully stop an interactive CC session.
+
+    This sends exit commands and waits for clean shutdown.
+    Use DELETE endpoint for immediate termination.
+    """
+    state = manager.sessions.get(session_id)
+
+    if not state:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
+    if state.mode != CCSessionMode.INTERACTIVE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Session {session_id} is not in interactive mode.",
+        )
+
+    await manager.stop_interactive_session(session_id)
+
+    return {
+        "status": "stopped",
+        "session_id": session_id,
+        "final_status": state.status.value,
+    }
 
 
 # ==========================================================================

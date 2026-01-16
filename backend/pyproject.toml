@@ -41,6 +41,9 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "structlog>=24.1.0",
     "tenacity>=8.2.3",
+
+    # Interactive PTY (Windows)
+    "pywinpty>=2.0.0; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

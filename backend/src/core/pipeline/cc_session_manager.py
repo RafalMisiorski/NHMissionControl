@@ -10,8 +10,10 @@ Key features:
 3. Watchdog monitors health and restarts crashed sessions
 4. Context is preserved across restarts
 5. Cross-platform: Windows (pywinpty) and Linux (tmux)
+6. Interactive mode for multi-turn conversations (EPOCH 9)
 
 EPOCH 8 - Visibility & Reliability
+EPOCH 9 - Interactive Sessions + Monitoring
 """
 
 import asyncio
@@ -24,13 +26,18 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional, Callable, Dict, List, Any
+from typing import Optional, Callable, Dict, List, Any, AsyncIterator
 from uuid import uuid4
 
 import structlog
 
-from src.core.models import CCSession, CCSessionStatus, CCSessionPlatform, CCSessionOutput
+from src.core.models import (
+    CCSession, CCSessionStatus, CCSessionPlatform, CCSessionOutput,
+    CCSessionMode, CCEventType, CCSessionEvent,
+)
 from src.core.nerve_center.events import EventBuilder, NHEvent
+from src.core.pipeline.interactive_backend import InteractiveBackend, create_interactive_backend, OutputChunk
+from src.core.pipeline.output_parser import CCOutputParser, EventStreamProcessor, ParsedEvent
 
 logger = structlog.get_logger()
 
@@ -311,6 +318,9 @@ class CCSessionState:
     # Status
     status: CCSessionStatus = CCSessionStatus.IDLE
 
+    # Session mode (EPOCH 9)
+    mode: CCSessionMode = CCSessionMode.HEADLESS
+
     # Pipeline context
     pipeline_run_id: Optional[str] = None
     stage_id: Optional[str] = None
@@ -334,6 +344,12 @@ class CCSessionState:
     dangerous_mode: bool = True
     max_runtime_minutes: int = 25
     heartbeat_timeout_seconds: int = 60
+
+    # Interactive mode (EPOCH 9)
+    interactive_backend: Optional[InteractiveBackend] = None
+    event_processor: Optional[EventStreamProcessor] = None
+    parsed_events: List[ParsedEvent] = field(default_factory=list)
+    prompt_count: int = 0
 
 
 # ==========================================================================
@@ -888,6 +904,7 @@ Please continue from where you stopped. Do not repeat completed work.
                 "session_id": s.session_id,
                 "session_name": s.session_name,
                 "status": s.status.value,
+                "mode": s.mode.value,
                 "pipeline_run_id": s.pipeline_run_id,
                 "stage_id": s.stage_id,
                 "working_directory": s.working_directory,
@@ -895,7 +912,337 @@ Please continue from where you stopped. Do not repeat completed work.
                 "runtime_seconds": (datetime.now(timezone.utc) - s.started_at).total_seconds() if s.started_at else 0,
                 "output_lines": len(s.output_lines),
                 "restart_count": s.restart_count,
-                "attach_command": self.backend.get_attach_command(s.process_handle),
+                "attach_command": self.backend.get_attach_command(s.process_handle) if s.mode == CCSessionMode.HEADLESS else "N/A (interactive)",
+                "prompt_count": s.prompt_count,
+                "event_count": len(s.parsed_events),
             }
             for s in self.sessions.values()
         ]
+
+    # ==========================================================================
+    # Interactive Mode Methods (EPOCH 9)
+    # ==========================================================================
+
+    async def create_interactive_session(
+        self,
+        session_id: str,
+        working_directory: str,
+        pipeline_run_id: Optional[str] = None,
+        stage_id: Optional[str] = None,
+        dangerous_mode: bool = True,
+    ) -> CCSessionState:
+        """
+        Create a new interactive CC session.
+
+        Unlike headless mode, this starts Claude Code WITHOUT the -p flag,
+        allowing multi-turn conversations with context preservation.
+
+        Args:
+            session_id: Unique identifier for this session
+            working_directory: Directory where CC will run
+            pipeline_run_id: Optional pipeline run ID
+            stage_id: Optional pipeline stage
+            dangerous_mode: Use --dangerously-skip-permissions (default True)
+
+        Returns:
+            CCSessionState for the new interactive session
+        """
+        session_name = f"cc-interactive-{session_id[:8]}"
+        output_file = os.path.join(
+            tempfile.gettempdir(),
+            f"cc-interactive-{session_id}.log"
+        )
+
+        # Create interactive PTY backend
+        interactive_backend = create_interactive_backend()
+
+        # Start the session
+        success = await interactive_backend.start(
+            working_dir=working_directory,
+            dangerous_mode=dangerous_mode,
+        )
+
+        if not success:
+            raise RuntimeError(f"Failed to start interactive session {session_id}")
+
+        # Create event processor for parsing output
+        event_processor = EventStreamProcessor()
+
+        # Create in-memory state
+        state = CCSessionState(
+            session_id=session_id,
+            session_name=session_name,
+            process_handle=session_id,  # For interactive, use session_id as handle
+            working_directory=working_directory,
+            output_file=interactive_backend.output_file or output_file,
+            mode=CCSessionMode.INTERACTIVE,
+            pipeline_run_id=pipeline_run_id,
+            stage_id=stage_id,
+            dangerous_mode=dangerous_mode,
+            interactive_backend=interactive_backend,
+            event_processor=event_processor,
+            status=CCSessionStatus.AWAITING_INPUT,  # Start in awaiting state
+        )
+
+        self.sessions[session_id] = state
+
+        # Start output streaming task
+        asyncio.create_task(self._stream_interactive_output(session_id))
+
+        # Emit event
+        await self.emit_event(EventBuilder.cc_session_created(
+            cc_session_id=session_id,
+            session_name=session_name,
+            working_directory=working_directory,
+            platform=self.platform.value,
+            pipeline_run_id=pipeline_run_id,
+            stage_id=stage_id,
+        ))
+
+        logger.info(
+            "Interactive CC Session created",
+            session_id=session_id,
+            session_name=session_name,
+            working_directory=working_directory,
+            mode="interactive",
+        )
+
+        return state
+
+    async def send_prompt(
+        self,
+        session_id: str,
+        prompt: str,
+    ) -> None:
+        """
+        Send a prompt to an interactive CC session.
+
+        Unlike send_task() which starts a new headless execution,
+        this sends a prompt to an existing interactive session.
+
+        Args:
+            session_id: Session to send prompt to
+            prompt: The prompt text to send
+        """
+        state = self.sessions.get(session_id)
+        if not state:
+            raise ValueError(f"Session {session_id} not found")
+
+        if state.mode != CCSessionMode.INTERACTIVE:
+            raise ValueError(f"Session {session_id} is not in interactive mode")
+
+        if not state.interactive_backend:
+            raise ValueError(f"Session {session_id} has no interactive backend")
+
+        # Send prompt
+        await state.interactive_backend.send_prompt(prompt)
+
+        # Update state
+        state.status = CCSessionStatus.RUNNING
+        state.last_heartbeat = datetime.now(timezone.utc)
+        state.prompt_count += 1
+
+        if state.prompt_count == 1:
+            state.started_at = datetime.now(timezone.utc)
+            state.task_prompt = prompt
+
+        # Emit event
+        await self.emit_event(EventBuilder.custom(
+            event_type="cc_prompt_sent",
+            data={
+                "cc_session_id": session_id,
+                "session_name": state.session_name,
+                "prompt_preview": prompt[:200],
+                "prompt_count": state.prompt_count,
+            },
+        ))
+
+        logger.info(
+            "Prompt sent to interactive session",
+            session_id=session_id,
+            prompt_preview=prompt[:100],
+            prompt_count=state.prompt_count,
+        )
+
+    async def send_interactive_input(
+        self,
+        session_id: str,
+        text: str,
+    ) -> None:
+        """
+        Send raw input to an interactive session.
+
+        Use this for answering CC's questions or confirmations.
+        """
+        state = self.sessions.get(session_id)
+        if not state:
+            raise ValueError(f"Session {session_id} not found")
+
+        if state.mode != CCSessionMode.INTERACTIVE:
+            raise ValueError(f"Session {session_id} is not in interactive mode")
+
+        if not state.interactive_backend:
+            raise ValueError(f"Session {session_id} has no interactive backend")
+
+        await state.interactive_backend.send_input(text)
+        state.last_heartbeat = datetime.now(timezone.utc)
+
+    async def _stream_interactive_output(self, session_id: str) -> None:
+        """Stream and parse output from interactive session."""
+        state = self.sessions.get(session_id)
+        if not state or not state.interactive_backend or not state.event_processor:
+            return
+
+        try:
+            async for chunk in state.interactive_backend.read_output():
+                # Store raw output
+                state.output_lines.append(chunk.content)
+                state.last_heartbeat = datetime.now(timezone.utc)
+
+                # Parse and emit events
+                parsed_events = state.event_processor.process(chunk.content)
+
+                for event in parsed_events:
+                    state.parsed_events.append(event)
+
+                    # Emit to Nerve Center based on event type
+                    await self._emit_parsed_event(state, event)
+
+                # Check awaiting state
+                if await state.interactive_backend.is_awaiting_input():
+                    if state.status == CCSessionStatus.RUNNING:
+                        state.status = CCSessionStatus.AWAITING_INPUT
+                        await self.emit_event(EventBuilder.custom(
+                            event_type="cc_awaiting_input",
+                            data={
+                                "cc_session_id": session_id,
+                                "session_name": state.session_name,
+                            },
+                        ))
+
+                # Check if still alive
+                if not await state.interactive_backend.is_alive():
+                    state.status = CCSessionStatus.CRASHED
+                    break
+
+        except Exception as e:
+            logger.error("Interactive output streaming error", session_id=session_id, error=str(e))
+            state.status = CCSessionStatus.CRASHED
+
+    async def _emit_parsed_event(self, state: CCSessionState, event: ParsedEvent) -> None:
+        """Emit a parsed event to the Nerve Center."""
+        if event.event_type == CCEventType.TOOL_CALL_START:
+            await self.emit_event(EventBuilder.custom(
+                event_type="cc_tool_call_start",
+                data={
+                    "cc_session_id": state.session_id,
+                    "session_name": state.session_name,
+                    "tool_name": event.tool_name,
+                    "tool_input": event.tool_input,
+                    "event_id": event.event_id,
+                },
+            ))
+
+        elif event.event_type == CCEventType.TOOL_CALL_END:
+            await self.emit_event(EventBuilder.custom(
+                event_type="cc_tool_call_end",
+                data={
+                    "cc_session_id": state.session_id,
+                    "session_name": state.session_name,
+                    "tool_output": event.tool_output[:500] if event.tool_output else None,
+                    "duration_ms": event.tool_duration_ms,
+                    "event_id": event.event_id,
+                },
+            ))
+
+        elif event.event_type == CCEventType.ERROR:
+            await self.emit_event(EventBuilder.custom(
+                event_type="cc_error",
+                data={
+                    "cc_session_id": state.session_id,
+                    "session_name": state.session_name,
+                    "error_type": event.error_type,
+                    "content": event.content,
+                },
+            ))
+
+        elif event.event_type == CCEventType.THINKING:
+            # Only emit significant thinking blocks (not every line)
+            if event.content and len(event.content) > 50:
+                await self.emit_event(EventBuilder.custom(
+                    event_type="cc_thinking",
+                    data={
+                        "cc_session_id": state.session_id,
+                        "session_name": state.session_name,
+                        "content": event.content[:500],
+                    },
+                ))
+
+    async def get_session_events(
+        self,
+        session_id: str,
+        event_types: Optional[List[CCEventType]] = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get parsed events from an interactive session.
+
+        Args:
+            session_id: Session to get events from
+            event_types: Filter by event types (None = all)
+            limit: Maximum number of events to return
+
+        Returns:
+            List of event dictionaries
+        """
+        state = self.sessions.get(session_id)
+        if not state:
+            return []
+
+        events = state.parsed_events
+        if event_types:
+            events = [e for e in events if e.event_type in event_types]
+
+        events = events[-limit:]
+
+        return [
+            {
+                "event_id": e.event_id,
+                "event_type": e.event_type.value,
+                "timestamp": e.timestamp.isoformat(),
+                "tool_name": e.tool_name,
+                "tool_input": e.tool_input,
+                "tool_output": e.tool_output[:500] if e.tool_output else None,
+                "tool_duration_ms": e.tool_duration_ms,
+                "content": e.content[:500] if e.content else None,
+                "is_error": e.is_error,
+                "error_type": e.error_type,
+                "line_start": e.line_start,
+                "line_end": e.line_end,
+            }
+            for e in events
+        ]
+
+    async def stop_interactive_session(self, session_id: str) -> None:
+        """Stop an interactive session gracefully."""
+        state = self.sessions.get(session_id)
+        if not state:
+            return
+
+        if state.mode == CCSessionMode.INTERACTIVE and state.interactive_backend:
+            await state.interactive_backend.stop()
+            state.status = CCSessionStatus.COMPLETED
+
+        logger.info("Interactive session stopped", session_id=session_id)
+
+    async def kill_interactive_session(self, session_id: str) -> None:
+        """Force kill an interactive session."""
+        state = self.sessions.get(session_id)
+        if not state:
+            return
+
+        if state.mode == CCSessionMode.INTERACTIVE and state.interactive_backend:
+            await state.interactive_backend.kill()
+            state.status = CCSessionStatus.CRASHED
+
+        logger.info("Interactive session killed", session_id=session_id)

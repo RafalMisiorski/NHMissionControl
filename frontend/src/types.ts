@@ -574,6 +574,7 @@ export const CCSessionStatus = {
   IDLE: 'idle',
   STARTING: 'starting',
   RUNNING: 'running',
+  AWAITING_INPUT: 'awaiting_input',  // EPOCH 9: Interactive mode
   STUCK: 'stuck',
   COMPLETED: 'completed',
   FAILED: 'failed',
@@ -581,6 +582,13 @@ export const CCSessionStatus = {
   RESTARTING: 'restarting',
 } as const;
 export type CCSessionStatus = typeof CCSessionStatus[keyof typeof CCSessionStatus];
+
+// EPOCH 9: Session mode
+export const CCSessionMode = {
+  HEADLESS: 'headless',
+  INTERACTIVE: 'interactive',
+} as const;
+export type CCSessionMode = typeof CCSessionMode[keyof typeof CCSessionMode];
 
 export interface CCSession {
   session_id: string;

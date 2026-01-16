@@ -1,14 +1,20 @@
 /**
- * CC Session Viewer Component (EPOCH 8)
- * =====================================
+ * CC Session Viewer Component (EPOCH 8 + EPOCH 9)
+ * ================================================
  *
  * Real-time terminal output viewer for Claude Code sessions.
  *
- * Features:
+ * Features (EPOCH 8):
  * - Real-time output streaming via WebSocket
  * - Session status indicators
  * - Manual intervention controls (send commands, restart, kill)
  * - Runtime and health metrics
+ *
+ * Features (EPOCH 9):
+ * - Interactive mode toggle
+ * - xterm.js terminal for interactive sessions
+ * - Tool call viewer with granular event tracking
+ * - Prompt input for multi-turn conversations
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
@@ -28,9 +34,15 @@ import {
   Minimize2,
   Zap,
   Heart,
+  Play,
+  PanelRightClose,
+  PanelRightOpen,
+  Sparkles,
 } from 'lucide-react';
 import type { CCSession, CCSessionStatus, CCSessionStreamMessage } from '../types';
 import * as api from '../api/client';
+import { InteractiveTerminal } from './InteractiveTerminal';
+import { ToolCallViewer } from './ToolCallViewer';
 
 // ==========================================================================
 // Status Configuration
@@ -59,6 +71,12 @@ const statusConfig: Record<CCSessionStatus, {
     color: 'text-cyan-400',
     bg: 'bg-cyan-500/20 border-cyan-500/30',
     label: 'RUNNING',
+  },
+  awaiting_input: {
+    icon: <Sparkles className="w-4 h-4 animate-pulse" />,
+    color: 'text-yellow-400',
+    bg: 'bg-yellow-500/20 border-yellow-500/30',
+    label: 'AWAITING INPUT',
   },
   stuck: {
     icon: <AlertTriangle className="w-4 h-4" />,
@@ -436,6 +454,8 @@ interface CCSessionViewerProps {
 
 export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [showEventsPanel, setShowEventsPanel] = useState(false);
+  const [isCreatingInteractive, setIsCreatingInteractive] = useState(false);
   const queryClient = useQueryClient();
 
   // Fetch sessions
@@ -443,6 +463,14 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
     queryKey: ['ccSessions', pipelineRunId],
     queryFn: () => api.getCCSessions(undefined, pipelineRunId),
     refetchInterval: 5000,
+  });
+
+  // Fetch events for selected interactive session
+  const { data: sessionEvents } = useQuery({
+    queryKey: ['ccSessionEvents', selectedSessionId],
+    queryFn: () => selectedSessionId ? api.getCCSessionEvents(selectedSessionId) : null,
+    enabled: !!selectedSessionId && showEventsPanel,
+    refetchInterval: 2000,
   });
 
   // Mutations
@@ -455,6 +483,36 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
 
   const killMutation = useMutation({
     mutationFn: api.killCCSession,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ccSessions'] });
+    },
+  });
+
+  // Create interactive session mutation
+  const createInteractiveMutation = useMutation({
+    mutationFn: (workingDirectory: string) => api.createInteractiveSession(workingDirectory),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['ccSessions'] });
+      setSelectedSessionId(data.session_id);
+      setIsCreatingInteractive(false);
+    },
+    onError: () => {
+      setIsCreatingInteractive(false);
+    },
+  });
+
+  // Send prompt to interactive session
+  const sendPromptMutation = useMutation({
+    mutationFn: ({ sessionId, prompt }: { sessionId: string; prompt: string }) =>
+      api.sendInteractivePrompt(sessionId, prompt),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['ccSessions'] });
+    },
+  });
+
+  // Stop interactive session
+  const stopInteractiveMutation = useMutation({
+    mutationFn: (sessionId: string) => api.stopInteractiveSession(sessionId),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['ccSessions'] });
     },
@@ -488,6 +546,9 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
     );
   }
 
+  // Check if selected session is interactive
+  const isInteractiveSession = selectedSession && (selectedSession as any).mode === 'interactive';
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -495,9 +556,17 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
         <div className="flex items-center gap-3">
           <Terminal className="w-6 h-6 text-cyan-400" />
           <h2 className="text-xl font-semibold text-white">CC Sessions</h2>
-          <span className="text-sm text-gray-500">EPOCH 8</span>
+          <span className="text-sm text-gray-500">EPOCH 9</span>
         </div>
         <div className="flex items-center gap-4">
+          {/* New Interactive Session Button */}
+          <button
+            onClick={() => setIsCreatingInteractive(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            <Play className="w-4 h-4" />
+            New Interactive
+          </button>
           <div className="flex items-center gap-2">
             <Heart className="w-4 h-4 text-green-400" />
             <span className="text-sm text-gray-400">{stats.running} running</span>
@@ -514,6 +583,53 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
           )}
         </div>
       </div>
+
+      {/* Create Interactive Session Modal */}
+      {isCreatingInteractive && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-gray-800 rounded-lg p-6 w-full max-w-md border border-gray-700">
+            <h3 className="text-lg font-semibold text-white mb-4">New Interactive Session</h3>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                const formData = new FormData(e.currentTarget);
+                const dir = formData.get('workingDirectory') as string;
+                if (dir) createInteractiveMutation.mutate(dir);
+              }}
+            >
+              <div className="mb-4">
+                <label className="block text-sm text-gray-400 mb-2">Working Directory</label>
+                <input
+                  type="text"
+                  name="workingDirectory"
+                  defaultValue="D:\\Projects"
+                  className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-cyan-500"
+                  placeholder="Enter working directory"
+                />
+              </div>
+              <div className="flex justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setIsCreatingInteractive(false)}
+                  className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={createInteractiveMutation.isPending}
+                  className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-500 disabled:bg-gray-600 text-white font-medium rounded-lg transition-colors"
+                >
+                  {createInteractiveMutation.isPending && (
+                    <Loader className="w-4 h-4 animate-spin" />
+                  )}
+                  Create Session
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {sessions.length === 0 ? (
         <div className="text-center py-12 bg-gray-800/30 rounded-xl border border-gray-700/50">
@@ -545,25 +661,52 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
           </div>
 
           {/* Terminal & Controls */}
-          <div className="lg:col-span-2 space-y-4">
+          <div className={`${showEventsPanel ? 'lg:col-span-1' : 'lg:col-span-2'} space-y-4`}>
             {selectedSession ? (
               <>
                 {/* Session info header */}
                 <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700/50">
                   <div className="flex items-center justify-between">
                     <div>
-                      <h3 className="text-lg font-medium text-white">
-                        {selectedSession.session_name}
-                      </h3>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-medium text-white">
+                          {selectedSession.session_name}
+                        </h3>
+                        {isInteractiveSession && (
+                          <span className="text-xs px-2 py-0.5 bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 rounded">
+                            INTERACTIVE
+                          </span>
+                        )}
+                      </div>
                       <p className="text-sm text-gray-400 font-mono mt-1">
                         {selectedSession.working_directory}
                       </p>
                     </div>
-                    <div className="text-right">
-                      <p className="text-sm text-gray-500">Attach Command:</p>
-                      <code className="text-xs text-cyan-400 bg-gray-900 px-2 py-1 rounded">
-                        {selectedSession.attach_command}
-                      </code>
+                    <div className="flex items-center gap-2">
+                      {/* Events panel toggle */}
+                      <button
+                        onClick={() => setShowEventsPanel(!showEventsPanel)}
+                        className={`p-2 rounded-lg transition-colors ${
+                          showEventsPanel
+                            ? 'bg-cyan-500/20 text-cyan-400'
+                            : 'bg-gray-700 text-gray-400 hover:text-white'
+                        }`}
+                        title={showEventsPanel ? 'Hide Events' : 'Show Events'}
+                      >
+                        {showEventsPanel ? (
+                          <PanelRightClose className="w-5 h-5" />
+                        ) : (
+                          <PanelRightOpen className="w-5 h-5" />
+                        )}
+                      </button>
+                      {!isInteractiveSession && (
+                        <div className="text-right">
+                          <p className="text-sm text-gray-500">Attach:</p>
+                          <code className="text-xs text-cyan-400 bg-gray-900 px-2 py-1 rounded">
+                            {selectedSession.attach_command}
+                          </code>
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -577,18 +720,41 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
                   )}
                 </div>
 
-                {/* Terminal output */}
-                <TerminalOutput
-                  sessionId={selectedSession.session_id}
-                  isStreaming={selectedSession.status === 'running'}
-                />
+                {/* Interactive Terminal (EPOCH 9) or Headless Output (EPOCH 8) */}
+                {isInteractiveSession ? (
+                  <div className="h-96">
+                    <InteractiveTerminal
+                      sessionId={selectedSession.session_id}
+                      status={selectedSession.status}
+                      onSendPrompt={(prompt) =>
+                        sendPromptMutation.mutate({
+                          sessionId: selectedSession.session_id,
+                          prompt,
+                        })
+                      }
+                      onSendInput={(text) =>
+                        api.sendInteractiveInput(selectedSession.session_id, text)
+                      }
+                      onStop={() => stopInteractiveMutation.mutate(selectedSession.session_id)}
+                      onKill={() => killMutation.mutate(selectedSession.session_id)}
+                    />
+                  </div>
+                ) : (
+                  <>
+                    {/* Headless terminal output */}
+                    <TerminalOutput
+                      sessionId={selectedSession.session_id}
+                      isStreaming={selectedSession.status === 'running'}
+                    />
 
-                {/* Command input */}
-                {selectedSession.status === 'running' && (
-                  <CommandInput
-                    sessionId={selectedSession.session_id}
-                    disabled={selectedSession.status !== 'running'}
-                  />
+                    {/* Command input for headless */}
+                    {selectedSession.status === 'running' && (
+                      <CommandInput
+                        sessionId={selectedSession.session_id}
+                        disabled={selectedSession.status !== 'running'}
+                      />
+                    )}
+                  </>
                 )}
               </>
             ) : (
@@ -597,6 +763,18 @@ export function CCSessionViewer({ pipelineRunId }: CCSessionViewerProps) {
               </div>
             )}
           </div>
+
+          {/* Events Panel (EPOCH 9) */}
+          {showEventsPanel && selectedSession && (
+            <div className="h-[600px]">
+              <ToolCallViewer
+                events={sessionEvents?.events || []}
+                toolSummary={sessionEvents?.tool_summary || {}}
+                errorSummary={sessionEvents?.error_summary || {}}
+                totalEvents={sessionEvents?.total_events || 0}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

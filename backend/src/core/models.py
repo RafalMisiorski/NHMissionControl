@@ -155,6 +155,7 @@ class CCSessionStatus(str, enum.Enum):
     IDLE = "idle"           # Created but not started
     STARTING = "starting"   # CC process starting
     RUNNING = "running"     # Actively executing task
+    AWAITING_INPUT = "awaiting_input"  # Interactive: waiting for user prompt
     STUCK = "stuck"         # No output for heartbeat timeout
     COMPLETED = "completed" # Task finished successfully
     FAILED = "failed"       # Task failed
@@ -167,6 +168,27 @@ class CCSessionPlatform(str, enum.Enum):
     WINDOWS = "windows"  # Uses pywinpty/ConPTY
     LINUX = "linux"      # Uses tmux
     WSL = "wsl"          # WSL with tmux
+
+
+class CCSessionMode(str, enum.Enum):
+    """CC session execution mode."""
+    HEADLESS = "headless"       # One-shot: claude -p "prompt"
+    INTERACTIVE = "interactive"  # Multi-turn: claude (stays open)
+
+
+class CCEventType(str, enum.Enum):
+    """Types of events captured from CC sessions."""
+    TOOL_CALL_START = "tool_call_start"    # Tool invocation began
+    TOOL_CALL_END = "tool_call_end"        # Tool invocation completed
+    THINKING = "thinking"                   # CC reasoning/planning
+    DECISION = "decision"                   # CC made a decision
+    ERROR = "error"                         # Error occurred
+    PROMPT_SENT = "prompt_sent"            # User prompt sent
+    RESPONSE_START = "response_start"      # CC started responding
+    RESPONSE_END = "response_end"          # CC finished responding
+    FILE_READ = "file_read"                # File read operation
+    FILE_WRITE = "file_write"              # File write operation
+    BASH_COMMAND = "bash_command"          # Bash command executed
 
 
 # ==========================================================================
@@ -1565,6 +1587,13 @@ class CCSession(Base, TimestampMixin):
         index=True,
     )
 
+    # Session mode (EPOCH 9)
+    mode: Mapped[CCSessionMode] = mapped_column(
+        Enum(CCSessionMode),
+        default=CCSessionMode.HEADLESS,
+        nullable=False,
+    )
+
     # Pipeline context
     pipeline_run_id: Mapped[Optional[UUID]] = mapped_column(
         UUID(as_uuid=True),
@@ -1724,3 +1753,103 @@ class CCSessionOutput(Base):
     def __repr__(self) -> str:
         preview = self.content[:50] + "..." if len(self.content) > 50 else self.content
         return f"<CCSessionOutput L{self.line_number}: {preview}>"
+
+
+class CCSessionEvent(Base, TimestampMixin):
+    """
+    Granular event tracking for CC sessions.
+
+    Captures tool calls, thinking, decisions, and errors for
+    monitoring and learning purposes.
+    EPOCH 9 - Interactive Sessions.
+    """
+
+    __tablename__ = "cc_session_events"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+    session_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cc_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    # Event classification
+    event_type: Mapped[CCEventType] = mapped_column(
+        Enum(CCEventType),
+        nullable=False,
+        index=True,
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+
+    # Tool call details (when event_type is TOOL_CALL_*)
+    tool_name: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+    )  # e.g., "Bash", "Read", "Edit", "Grep"
+    tool_input: Mapped[Optional[dict]] = mapped_column(
+        JSON,
+        nullable=True,
+    )  # Tool parameters
+    tool_output: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )  # Tool result (truncated if large)
+    tool_duration_ms: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+    )  # Execution time
+
+    # Content (for thinking, error, etc.)
+    content: Mapped[Optional[str]] = mapped_column(
+        Text,
+        nullable=True,
+    )  # Event content/description
+
+    # Metadata
+    is_error: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+    error_type: Mapped[Optional[str]] = mapped_column(
+        String(100),
+        nullable=True,
+    )  # e.g., "syntax_error", "import_error", "runtime_error"
+
+    # Correlation
+    parent_event_id: Mapped[Optional[UUID]] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("cc_session_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )  # Link to parent event (e.g., TOOL_CALL_START -> TOOL_CALL_END)
+
+    # Output line reference
+    output_line_start: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    output_line_end: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    # Relationships
+    session: Mapped["CCSession"] = relationship(
+        foreign_keys=[session_id],
+    )
+    parent_event: Mapped[Optional["CCSessionEvent"]] = relationship(
+        remote_side=[id],
+        foreign_keys=[parent_event_id],
+    )
+
+    def __repr__(self) -> str:
+        return f"<CCSessionEvent {self.event_type.value} tool={self.tool_name}>"

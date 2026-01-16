@@ -367,4 +367,102 @@ export const getCCSessionStreamUrl = (sessionId: string): string => {
   return `${protocol}//${host}/api/v1/cc-sessions/${sessionId}/stream`;
 };
 
+// ==========================================================================
+// Interactive CC Session API (EPOCH 9)
+// ==========================================================================
+
+export interface InteractiveSessionResponse {
+  session_id: string;
+  session_name: string;
+  status: string;
+  mode: string;
+  platform: string;
+  working_directory: string;
+  pipeline_run_id?: string;
+  stage_id?: string;
+  task_prompt?: string;
+  dangerous_mode: boolean;
+  started_at?: string;
+  runtime_seconds: number;
+  output_lines: number;
+  prompt_count: number;
+  event_count: number;
+}
+
+export interface SessionEvent {
+  event_id: string;
+  event_type: string;
+  timestamp: string;
+  tool_name?: string;
+  tool_input?: Record<string, unknown>;
+  tool_output?: string;
+  tool_duration_ms?: number;
+  content?: string;
+  is_error: boolean;
+  error_type?: string;
+  line_start?: number;
+  line_end?: number;
+}
+
+export interface EventsResponse {
+  session_id: string;
+  events: SessionEvent[];
+  total_events: number;
+  tool_summary: Record<string, number>;
+  error_summary: Record<string, number>;
+}
+
+export const createInteractiveSession = async (
+  workingDirectory: string,
+  pipelineRunId?: string,
+  stageId?: string,
+  dangerousMode = true
+): Promise<InteractiveSessionResponse> => {
+  const { data } = await api.post('/cc-sessions/interactive', {
+    working_directory: workingDirectory,
+    pipeline_run_id: pipelineRunId,
+    stage_id: stageId,
+    dangerous_mode: dangerousMode,
+  });
+  return data;
+};
+
+export const sendInteractivePrompt = async (
+  sessionId: string,
+  prompt: string
+): Promise<InteractiveSessionResponse> => {
+  const { data } = await api.post(`/cc-sessions/${sessionId}/prompt`, {
+    prompt,
+  });
+  return data;
+};
+
+export const sendInteractiveInput = async (
+  sessionId: string,
+  text: string
+): Promise<{ status: string; text: string }> => {
+  const { data } = await api.post(`/cc-sessions/${sessionId}/input`, {
+    text,
+  });
+  return data;
+};
+
+export const getCCSessionEvents = async (
+  sessionId: string,
+  eventType?: string,
+  limit = 100
+): Promise<EventsResponse> => {
+  const params: Record<string, unknown> = { limit };
+  if (eventType) params.event_type = eventType;
+  const { data } = await api.get(`/cc-sessions/${sessionId}/events`, { params });
+  return data;
+};
+
+export const stopInteractiveSession = async (
+  sessionId: string
+): Promise<{ status: string; session_id: string; final_status: string }> => {
+  const { data } = await api.post(`/cc-sessions/${sessionId}/stop`);
+  return data;
+};
+
 export default api;

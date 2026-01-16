@@ -888,6 +888,37 @@ class EventBuilder:
             },
         )
 
+    @staticmethod
+    def custom(
+        event_type: str,
+        message: str = "",
+        session_id: str = None,
+        task_id: str = None,
+        severity: Severity = Severity.INFO,
+        details: Dict[str, Any] = None,
+        data: Dict[str, Any] = None,
+    ) -> NHEvent:
+        """Create a custom event with arbitrary type"""
+        # Map common custom event types to categories
+        category = EventCategory.CC_SESSION
+        if event_type.startswith("pipeline"):
+            category = EventCategory.PIPELINE
+        elif event_type.startswith("agent"):
+            category = EventCategory.AGENT
+
+        # Support both 'details' and 'data' parameter names
+        event_details = data or details or {}
+
+        return NHEvent(
+            category=category,
+            event_type=EventType.TASK_PROGRESS,  # Use generic type
+            severity=severity,
+            session_id=session_id,
+            task_id=task_id,
+            message=message,
+            details={"custom_event_type": event_type, **event_details},
+        )
+
 
 # ==========================================================================
 # Event Aggregation for UI
