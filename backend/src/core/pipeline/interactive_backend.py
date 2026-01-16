@@ -222,7 +222,8 @@ class WindowsPTYBackend(InteractiveBackend):
         self._running = True
         self._awaiting_input = True  # Initial state: waiting for first prompt
 
-        # Start async read loop
+        # Start read loop immediately (using a small delay to let PTY initialize)
+        await asyncio.sleep(0.5)
         self._read_task = asyncio.create_task(self._read_loop_winpty())
 
         logger.info(
@@ -277,37 +278,54 @@ class WindowsPTYBackend(InteractiveBackend):
         return True
 
     async def _read_loop_winpty(self) -> None:
-        """Read loop for winpty backend."""
+        """Read loop for winpty backend using polling with short reads."""
+        consecutive_empty_reads = 0
+        max_empty_before_alive_check = 20  # Check alive after ~2 seconds of no data
+
         while self._running and self._pty:
             try:
-                # Check if PTY is alive
-                if not self._pty.isalive():
-                    logger.info("PTY process exited")
-                    self._running = False
-                    break
+                # Check if PTY is alive periodically
+                if consecutive_empty_reads >= max_empty_before_alive_check:
+                    consecutive_empty_reads = 0
+                    if not self._pty.isalive():
+                        logger.info("PTY process exited")
+                        self._running = False
+                        break
+                    await self._check_awaiting_state()
 
-                # Non-blocking read using executor
-                def read_with_timeout():
+                # Try to read available data (non-blocking with short timeout via executor)
+                loop = asyncio.get_event_loop()
+
+                def do_read():
                     try:
-                        return self._pty.read(4096)
+                        # Read what's available - this may still block briefly
+                        # but using small buffer helps
+                        return self._pty.read(1024)
+                    except EOFError:
+                        return None
                     except Exception:
                         return ""
 
-                data = await asyncio.wait_for(
-                    asyncio.get_event_loop().run_in_executor(None, read_with_timeout),
-                    timeout=0.5,
-                )
+                try:
+                    data = await asyncio.wait_for(
+                        loop.run_in_executor(None, do_read),
+                        timeout=0.1,
+                    )
+                except asyncio.TimeoutError:
+                    data = ""
 
-                if data:
+                if data is None:
+                    # EOF
+                    logger.info("PTY returned EOF")
+                    self._running = False
+                    break
+                elif data:
+                    consecutive_empty_reads = 0
                     await self._process_output(data)
                 else:
-                    # No data, check awaiting state
-                    await self._check_awaiting_state()
+                    consecutive_empty_reads += 1
                     await asyncio.sleep(0.1)
 
-            except asyncio.TimeoutError:
-                # No data available, check if still waiting
-                await self._check_awaiting_state()
             except Exception as e:
                 if self._running:
                     logger.error("Read error (winpty)", error=str(e))
@@ -369,8 +387,15 @@ class WindowsPTYBackend(InteractiveBackend):
         # Get recent output
         recent = "".join(self._output_buffer[-10:]) if self._output_buffer else ""
 
+        # Strip ANSI escape codes for pattern matching
+        import re
+        ansi_escape = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[?0-9;]*[hl]')
+        clean_recent = ansi_escape.sub('', recent)
+
         # Patterns that indicate CC is waiting for input
+        # Note: Claude Code uses ❯ (U+276F) as its prompt character
         awaiting_patterns = [
+            "❯ ",           # Claude Code prompt (IMPORTANT)
             "> ",           # Standard prompt
             ">>> ",         # Python-style prompt
             "? ",           # Question prompt
@@ -381,9 +406,9 @@ class WindowsPTYBackend(InteractiveBackend):
             "Continue?",    # Continuation question
         ]
 
-        # Check if any pattern matches at the end of recent output
+        # Check if any pattern matches at the end of recent output (cleaned)
         self._awaiting_input = any(
-            recent.rstrip().endswith(pattern.rstrip())
+            clean_recent.rstrip().endswith(pattern.rstrip())
             for pattern in awaiting_patterns
         )
 

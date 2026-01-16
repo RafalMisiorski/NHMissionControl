@@ -707,10 +707,21 @@ class CCSessionManager:
                 now = datetime.now(timezone.utc)
 
                 for session_id, state in list(self.sessions.items()):
+                    # Skip sessions that aren't actively running
                     if state.status != CCSessionStatus.RUNNING:
                         continue
 
-                    # Check if process is alive
+                    # For interactive sessions, use the interactive backend
+                    if state.mode == CCSessionMode.INTERACTIVE:
+                        if state.interactive_backend:
+                            # Check if interactive backend is alive
+                            if not await state.interactive_backend.is_alive():
+                                # Don't crash if in AWAITING_INPUT - that's expected idle state
+                                if state.status != CCSessionStatus.AWAITING_INPUT:
+                                    await self._handle_crash(state)
+                        continue  # Skip headless checks for interactive sessions
+
+                    # Check if process is alive (headless sessions only)
                     if not await self.backend.is_alive(state.process_handle):
                         await self._handle_crash(state)
                         continue
@@ -1093,8 +1104,15 @@ Please continue from where you stopped. Do not repeat completed work.
         if not state or not state.interactive_backend or not state.event_processor:
             return
 
+        # Track consecutive "not alive" checks to prevent premature crash detection
+        not_alive_count = 0
+        max_not_alive_checks = 3  # Allow a few false negatives before marking as crashed
+
         try:
             async for chunk in state.interactive_backend.read_output():
+                # Reset not-alive counter on any output
+                not_alive_count = 0
+
                 # Store raw output
                 state.output_lines.append(chunk.content)
                 state.last_heartbeat = datetime.now(timezone.utc)
@@ -1120,14 +1138,28 @@ Please continue from where you stopped. Do not repeat completed work.
                             },
                         ))
 
-                # Check if still alive
+                # Check if still alive - but be tolerant for interactive sessions
                 if not await state.interactive_backend.is_alive():
-                    state.status = CCSessionStatus.CRASHED
-                    break
+                    not_alive_count += 1
+                    if not_alive_count >= max_not_alive_checks:
+                        # Only crash if we're not in AWAITING_INPUT (expected idle state)
+                        if state.status != CCSessionStatus.AWAITING_INPUT:
+                            logger.warning(
+                                "Interactive session appears dead",
+                                session_id=session_id,
+                                not_alive_count=not_alive_count,
+                            )
+                            state.status = CCSessionStatus.CRASHED
+                            break
+                        else:
+                            # In AWAITING_INPUT, the process may appear idle - that's OK
+                            not_alive_count = 0
 
         except Exception as e:
             logger.error("Interactive output streaming error", session_id=session_id, error=str(e))
-            state.status = CCSessionStatus.CRASHED
+            # Only mark as crashed if not already in a terminal state
+            if state.status not in (CCSessionStatus.COMPLETED, CCSessionStatus.AWAITING_INPUT):
+                state.status = CCSessionStatus.CRASHED
 
     async def _emit_parsed_event(self, state: CCSessionState, event: ParsedEvent) -> None:
         """Emit a parsed event to the Nerve Center."""

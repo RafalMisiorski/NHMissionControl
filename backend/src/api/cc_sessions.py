@@ -584,10 +584,11 @@ async def send_prompt(
             detail=f"Session {session_id} is not in interactive mode. Use /task endpoint for headless mode.",
         )
 
-    if state.status not in (CCSessionStatus.AWAITING_INPUT, CCSessionStatus.IDLE):
+    # Allow sending prompts in RUNNING state too (status detection may lag behind)
+    if state.status not in (CCSessionStatus.AWAITING_INPUT, CCSessionStatus.IDLE, CCSessionStatus.RUNNING):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Session is in {state.status.value} state. Wait for AWAITING_INPUT status.",
+            detail=f"Session is in {state.status.value} state. Wait for session to be ready.",
         )
 
     try:
